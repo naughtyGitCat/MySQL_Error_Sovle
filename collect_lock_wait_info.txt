@@ -48,6 +48,10 @@ desc dba.lock_waits
 -- --switch on MySQL event scheduler
 
 set GLOBAL EVENT_scheduler=1
+ or
+ <my.cnf>
+ [mysqld]
+ event_scheduler=1
 
 -- --take a look at the table 
 
