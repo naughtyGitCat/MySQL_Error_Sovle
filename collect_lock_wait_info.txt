@@ -1,0 +1,54 @@
+-- --a database for dba ------
+
+create database dba;
+
+-- --create a table to perpetuate the lock_wait info. not the  changeful view in sys or information_schema
+
+use dba;
+create table lock_waits as  
+SELECT lw.requesting_trx_id AS request_XID, 
+ trx.trx_mysql_thread_id as request_mysql_PID,
+ trx.trx_query AS request_query, 
+ lw.blocking_trx_id AS blocking_XID, 
+ trx1.trx_mysql_thread_id as blocking_mysql_PID,
+ trx1.trx_query AS blocking_query, lo.lock_index AS lock_index FROM 
+ information_schema.innodb_lock_waits lw INNER JOIN 
+ information_schema.innodb_locks lo 
+ ON lw.requesting_trx_id = lo.lock_trx_id INNER JOIN 
+ information_schema.innodb_locks lo1 
+ ON lw.blocking_trx_id = lo1.lock_trx_id INNER JOIN 
+ information_schema.innodb_trx trx 
+ ON lo.lock_trx_id = trx.trx_id INNER JOIN 
+ information_schema.innodb_trx trx1 
+ ON lo1.lock_trx_id = trx1.trx_id;
+
+-- --create a scheduled event to collect lock_wait info and save to the lock_waits created before
+
+use dba;
+create event collect_lock_waits
+ ON SCHEDULE EVERY 1 SECOND
+do
+	insert into dba.lock_waits SELECT lw.requesting_trx_id AS request_XID, 
+ trx.trx_mysql_thread_id as request_mysql_PID,
+ trx.trx_query AS request_query, 
+ lw.blocking_trx_id AS blocking_XID, 
+ trx1.trx_mysql_thread_id as blocking_mysql_PID,
+ trx1.trx_query AS blocking_query, lo.lock_index AS lock_index FROM 
+ information_schema.innodb_lock_waits lw INNER JOIN 
+ information_schema.innodb_locks lo 
+ ON lw.requesting_trx_id = lo.lock_trx_id INNER JOIN 
+ information_schema.innodb_locks lo1 
+ ON lw.blocking_trx_id = lo1.lock_trx_id INNER JOIN 
+ information_schema.innodb_trx trx 
+ ON lo.lock_trx_id = trx.trx_id INNER JOIN 
+ information_schema.innodb_trx trx1 
+ ON lo1.lock_trx_id = trx1.trx_id;
+desc dba.lock_waits
+
+-- --switch on MySQL event scheduler
+
+set GLOBAL EVENT_scheduler=1
+
+-- --take a look at the table 
+
+select * from lock_waits
