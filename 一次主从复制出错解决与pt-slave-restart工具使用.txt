@@ -1,0 +1,133 @@
+缘由：
+测试环境中，主库执行了DDL语句增加一个字段的长度后，从库报无法修改这个字段长的的问题，且这个字段的长度已经介于原来的长度和目标长度中间了
+
+环境
+5.7.19 GTID双主复制
+
+解决步骤：
+1.尝试手工修改字段长度，恢复到未修改前的长度，重启slave进程。结果：失败，报同样的错误，错误编号1677
+2.尝试手工修改字段长度，同步到修改后长度，跳过这个事务：
+ 
+mysql>stop slave;
+
+mysql>set gtid_next="d7c35015-9dd1-11e7-b70d-005056aa19c3:51629";  
+  ##这里需要注意，由于开启了双主GTID复制,show master status和Executed_gtid_set会有两个GTID值，其中一个为自己的GTID，另一个为主的GTID。
+  ##设置的时候只要把主库的GTID写进“”即可。自身的GTID不需要指明，但如果使用set gtid_purged的方式跳过，是需要可以指明两个GTID的
+
+mysql>begin;commit;
+  ##设置后，插入一个空事务进行更新GTID。
+  
+mysql>set gtid_next='automatic'；
+  ##官方手册规定：精确的指定过一次GTID，并产生一次事务后，后面必须再次指定一次gtid_next的模式（是模式，不是精确值，官方手册这里没有写清楚）
+  ##“After this variable has been set to UUID:NUMBER, and a transaction has been committed or rolled back, an explicit SET GTID_NEXT statement must again be issued before any other statement.”
+mysql>start slave；
+  讲道理，这里就应该正常了，但还是报同样的错误，一次次的这样操作也很麻烦，
+
+ 3.批量跳过复制错误有如下两个方法
+       使用slave-skip-errors=123,456,789，但这个参数不是动态参数，需要写进配置文件并重启，而且也不方便观测
+      使用percona公司的pt-slave-restart工具
+ 
+pt-slave-restart是percona-toolkit工具集中的一个专用于处理复制错误的工具
+    原理：根据设置，跳过从主库过来的指定错误事务
+    1.支持GTID复制，但是不支持多线程复制，工具分不清到底哪个线程复制出了问题
+2.除了主机指定外的实用参数：
+             --always        :永不停止slave线程，手工停止也不行
+              --ask-pass      :替换-p命令，防止密码输入被身后的开发窥屏
+              --error-numbers ：指定跳过哪些错误，可用,进行分隔
+              --error-text    ：根据错误信息进行匹配跳过
+              --log           ：输出到文件
+              --recurse       ：在主端执行，监控从端
+              --runtime       ：工具执行多长时间后退出：默认秒，                                                                         m=minute,h=hours,d=days
+              --slave-user --slave-password ：从库的账号密码，从主端运行时使用
+              --skip-count    ：一次跳过错误的个数，胆大的可以设置大些，不指定默认1个
+              --master-uuid   :级联复制的时候，指定跳过上级或者上上级事务的错误
+              --until-master  :到达指定的master_log_pos,file位置后停止，
+                                                 格式：”file:pos“
+              --until-relay   :和上面一样，但是时根据relay_log的位置来停止
+  
+ 安装：
+  centos#yum install https://www.percona.com/redir/downloads/percona-release/redhat/percona-release-0.1-4.noarch.rpm
+  centos#yum search percon-tool
+  centos#yum -y install yum install percona-toolkit
+
+ 查看帮助文件:
+  perldoc /usr/bin/pt-slave-restart
+
+ 运行工具：
+  pt-slave-restart --user=root --password=123456 --socket=/data/mysql/3304/tmp/mysql3304.sock --error-numbers=1677
+
+ 输出如下：
+Not checking slave because relay log file or position has not changed (file relay-bin.000002 pos 205804892)
+2017-09-30T12:55:03 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205805634 1677 
+Not checking slave because relay log file or position has not changed (file relay-bin.000002 pos 205805634)
+Not checking slave because relay log file or position has not changed (file relay-bin.000002 pos 205805634)
+Not checking slave because relay log file or position has not changed (file relay-bin.000002 pos 205805634)
+2017-09-30T12:55:03 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205806382 1677 
+2017-09-30T12:55:04 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205807125 1677 
+2017-09-30T12:55:04 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205807873 1677 
+Not checking slave because relay log file or position has not changed (file relay-bin.000002 pos 205807873)
+2017-09-30T12:55:20 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205997621 1677 
+2017-09-30T12:55:21 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205998353 1677 
+2017-09-30T12:55:22 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205999085 1677 
+2017-09-30T12:55:23 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   205999823 1677 
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206000565 1677 
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206001307 1677 
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206002049 1677
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206002783 1677 
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206003517 1677 
+2017-09-30T12:55:24 S=/data/mysql/3304/tmp/mysql3304.sock,p=...,u=root relay-bin.000002   206004253 1677
+ 
+    查看从库线程情况：
+************** 1. row ***************************
+                         Slave_IO_State: Waiting for master to send event
+                  Master_Host: 192.168.100.200
+                  Master_User: bt_repl
+                  Master_Port: 3304
+                Connect_Retry: 60
+              Master_Log_File: 3304binlog.000002
+          Read_Master_Log_Pos: 665635124
+               Relay_Log_File: relay-bin.000006
+                Relay_Log_Pos: 2080902
+        Relay_Master_Log_File: 3304binlog.000002
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+                   Last_Errno: 0
+                   Last_Error: 
+                 Skip_Counter: 0
+          Exec_Master_Log_Pos: 665635124
+              Relay_Log_Space: 2081454
+              Until_Condition: None
+               Until_Log_File: 
+                Until_Log_Pos: 0
+           Master_SSL_Allowed: No
+        Seconds_Behind_Master: 0
+Master_SSL_Verify_Server_Cert: No
+                Last_IO_Errno: 0
+                Last_IO_Error: 
+               Last_SQL_Errno: 0
+               Last_SQL_Error: 
+  Replicate_Ignore_Server_Ids: 
+             Master_Server_Id: 3304
+                  Master_UUID: d7c35015-9dd1-11e7-b70d-005056aa19c3
+             Master_Info_File: mysql.slave_master_info
+                    SQL_Delay: 0
+          SQL_Remaining_Delay: NULL
+      Slave_SQL_Running_State: Slave has read all relay log; waiting for more updates
+           Master_Retry_Count: 86400
+                  Master_Bind: 
+           Retrieved_Gtid_Set: d7c35015-9dd1-11e7-b70d-005056aa19c3:1-430778
+            Executed_Gtid_Set: 886f86e9-9dd6-11e7-ba30-005056aa6236:1-2,
+d7c35015-9dd1-11e7-b70d-005056aa19c3:1-430778
+                Auto_Position: 1
+         1 row in set (0.07 sec)
+
+     已经没有错误了。OK
+
+
+ 
+  
+
+
+
+attention:
+1.gtid_next是一个会话级别的参数，而gtid_purged则是一个全局级别的参数
